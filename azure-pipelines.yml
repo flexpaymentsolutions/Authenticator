@@ -6,14 +6,16 @@
 trigger:
 - dev
 
+resources:
+- repo: self
+
 pool:
   vmImage: ubuntu-latest
 
 steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
-
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+- bash:
+    sudo apt-get update
+    sudo apt-get -y upgrade
+    sudo apt-get -y install npm
+    npm install
+    npm run [chrome, firefox, prod]
