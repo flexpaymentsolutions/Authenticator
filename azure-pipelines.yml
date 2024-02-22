@@ -18,6 +18,6 @@ steps:
     sudo apt-get -y upgrade
     sudo apt-get -y install npm
     npm install
-    npm run chrome
-    npm run firefox
-    npm run prod
+    yes | npm run chrome
+    yes | npm run firefox
+    yes | npm run prod
