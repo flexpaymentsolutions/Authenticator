@@ -3,10 +3,8 @@
 import QRCode from "qrcode-reader";
 import jsQR from "jsqr";
 
-import { getCredentials } from "./models/credentials";
 import { Encryption } from "./models/encryption";
 import { EntryStorage, ManagedStorage } from "./models/storage";
-import { Dropbox, Drive, OneDrive } from "./models/backup";
 import * as uuid from "uuid/v4";
 import { getSiteName, getMatchedEntries } from "./utils";
 import { CodeState } from "./models/otp";
@@ -37,8 +35,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     setAutolock();
   } else if (message.action === "passphrase") {
     sendResponse(cachedPassphrase);
-  } else if (["dropbox", "drive", "onedrive"].indexOf(message.action) > -1) {
-    getBackupToken(message.action);
   } else if (message.action === "lock") {
     cachedPassphrase = "";
   } else if (message.action === "resetAutolock") {
@@ -288,222 +284,6 @@ async function getTotp(text: string, silent = false) {
   }
 }
 
-function getBackupToken(service: string) {
-  if (isChrome && service === "drive") {
-    chrome.identity.getAuthToken(
-      {
-        interactive: true,
-        scopes: ["https://www.googleapis.com/auth/drive.file"],
-      },
-      (value) => {
-        if (!value) {
-          return false;
-        }
-        localStorage.driveToken = value;
-        chrome.runtime.sendMessage({ action: "drivetoken", value });
-        return true;
-      }
-    );
-  } else {
-    let authUrl = "";
-    let redirUrl = "";
-    if (service === "dropbox") {
-      redirUrl = encodeURIComponent(chrome.identity.getRedirectURL());
-      authUrl =
-        "https://www.dropbox.com/oauth2/authorize?response_type=token&client_id=" +
-        getCredentials().dropbox.client_id +
-        "&redirect_uri=" +
-        redirUrl;
-    } else if (service === "drive") {
-      if (navigator.userAgent.indexOf("Edg") !== -1) {
-        redirUrl = encodeURIComponent("https://authenticator.cc/oauth-edge");
-      } else if (isFirefox) {
-        redirUrl = encodeURIComponent(chrome.identity.getRedirectURL());
-      } else {
-        redirUrl = encodeURIComponent("https://authenticator.cc/oauth");
-      }
-
-      authUrl =
-        "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&access_type=offline&client_id=" +
-        getCredentials().drive.client_id +
-        "&scope=https%3A//www.googleapis.com/auth/drive.file&prompt=consent&redirect_uri=" +
-        redirUrl;
-    } else if (service === "onedrive") {
-      redirUrl = encodeURIComponent(chrome.identity.getRedirectURL());
-      authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${
-        getCredentials().onedrive.client_id
-      }&response_type=code&redirect_uri=${redirUrl}&scope=https%3A%2F%2Fgraph.microsoft.com%2FFiles.ReadWrite${
-        localStorage.oneDriveBusiness !== "true" ? ".AppFolder" : ""
-      }%20https%3A%2F%2Fgraph.microsoft.com%2FUser.Read%20offline_access&response_mode=query&prompt=consent`;
-    }
-    chrome.identity.launchWebAuthFlow(
-      { url: authUrl, interactive: true },
-      async (url) => {
-        if (!url) {
-          return;
-        }
-        let hashMatches = url.split("#");
-        if (service === "drive") {
-          hashMatches = url.slice(0, -1).split("?");
-        } else if (service === "onedrive") {
-          hashMatches = url.split("?");
-        }
-
-        if (hashMatches.length < 2) {
-          return;
-        }
-
-        const hash = hashMatches[1];
-
-        const resData = hash.split("&");
-        for (let i = 0; i < resData.length; i++) {
-          const kv = resData[i];
-          if (/^(.*?)=(.*?)$/.test(kv)) {
-            const kvMatches = kv.match(/^(.*?)=(.*?)$/);
-            if (!kvMatches) {
-              continue;
-            }
-            const key = kvMatches[1];
-            const value = kvMatches[2];
-            if (key === "access_token") {
-              if (service === "dropbox") {
-                localStorage.dropboxToken = value;
-                uploadBackup("dropbox");
-                return;
-              }
-            } else if (key === "code") {
-              if (service === "drive") {
-                const xhr = new XMLHttpRequest();
-                // Need to trade code we got from launchWebAuthFlow for a
-                // token & refresh token
-                await new Promise(
-                  (
-                    resolve: (value: boolean) => void,
-                    reject: (reason: Error) => void
-                  ) => {
-                    xhr.open(
-                      "POST",
-                      "https://www.googleapis.com/oauth2/v4/token?client_id=" +
-                        getCredentials().drive.client_id +
-                        "&client_secret=" +
-                        getCredentials().drive.client_secret +
-                        "&code=" +
-                        value +
-                        "&redirect_uri=" +
-                        redirUrl +
-                        "&grant_type=authorization_code"
-                    );
-                    xhr.setRequestHeader("Accept", "application/json");
-                    xhr.setRequestHeader(
-                      "Content-Type",
-                      "application/x-www-form-urlencoded"
-                    );
-                    xhr.onreadystatechange = () => {
-                      if (xhr.readyState === 4) {
-                        try {
-                          const res = JSON.parse(xhr.responseText);
-                          if (res.error) {
-                            console.error(res.error_description);
-                            resolve(false);
-                          } else {
-                            localStorage.driveToken = res.access_token;
-                            localStorage.driveRefreshToken = res.refresh_token;
-                            resolve(true);
-                          }
-                        } catch (error) {
-                          console.error(error);
-                          reject(error as Error);
-                        }
-                      }
-                      return;
-                    };
-                    xhr.send();
-                  }
-                );
-                uploadBackup("drive");
-              } else if (service === "onedrive") {
-                const xhr = new XMLHttpRequest();
-                // Need to trade code we got from launchWebAuthFlow for a
-                // token & refresh token
-                await new Promise(
-                  (
-                    resolve: (value: boolean) => void,
-                    reject: (reason: Error) => void
-                  ) => {
-                    xhr.open(
-                      "POST",
-                      "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-                    );
-                    xhr.setRequestHeader("Accept", "application/json");
-                    xhr.setRequestHeader(
-                      "Content-Type",
-                      "application/x-www-form-urlencoded"
-                    );
-                    xhr.onreadystatechange = () => {
-                      if (xhr.readyState === 4) {
-                        try {
-                          const res = JSON.parse(xhr.responseText);
-                          if (res.error) {
-                            console.error(res.error_description);
-                            resolve(false);
-                          } else {
-                            localStorage.oneDriveToken = res.access_token;
-                            localStorage.oneDriveRefreshToken =
-                              res.refresh_token;
-                            resolve(true);
-                          }
-                        } catch (error) {
-                          console.error(error);
-                          reject(error);
-                        }
-                      }
-                      return;
-                    };
-                    xhr.send(
-                      `client_id=${
-                        getCredentials().onedrive.client_id
-                      }&grant_type=authorization_code&scope=https%3A%2F%2Fgraph.microsoft.com%2FFiles.ReadWrite${
-                        localStorage.oneDriveBusiness !== "true"
-                          ? ".AppFolder"
-                          : ""
-                      }%20https%3A%2F%2Fgraph.microsoft.com%2FUser.Read%20offline_access&code=${value}&redirect_uri=${redirUrl}&client_secret=${encodeURIComponent(
-                        getCredentials().onedrive.client_secret
-                      )}`
-                    );
-                  }
-                );
-                uploadBackup("onedrive");
-              }
-            }
-          }
-        }
-        return;
-      }
-    );
-  }
-}
-
-async function uploadBackup(service: string) {
-  const encryption = new Encryption(cachedPassphrase);
-
-  switch (service) {
-    case "dropbox":
-      await new Dropbox().upload(encryption);
-      break;
-
-    case "drive":
-      await new Drive().upload(encryption);
-      break;
-
-    case "onedrive":
-      await new OneDrive().upload(encryption);
-      break;
-
-    default:
-      break;
-  }
-}
-
 // Show issue page after first install
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason !== "install") {
@@ -527,7 +307,7 @@ chrome.commands.onCommand.addListener(async (command: string) => {
   switch (command) {
     case "scan-qr":
       await new Promise(
-        (resolve: () => void, reject: (reason: Error) => void) => {
+        (resolve: (x: any) => void, reject: (reason: Error) => void) => {
           try {
             return chrome.tabs.executeScript(
               { file: "/dist/content.js" },
@@ -558,7 +338,7 @@ chrome.commands.onCommand.addListener(async (command: string) => {
 
     case "autofill":
       await new Promise(
-        (resolve: () => void, reject: (reason: Error) => void) => {
+        (resolve: (x: any) => void, reject: (reason: Error) => void) => {
           try {
             return chrome.tabs.executeScript(
               { file: "/dist/content.js" },
