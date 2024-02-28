@@ -19,6 +19,9 @@ steps:
     sudo apt-get -y install npm
     npm install
     export NODE_OPTIONS=--openssl-legacy-provider
-    yes | npm run chrome
-    yes | npm run firefox
     yes | npm run prod
+    cp -r release/* "$(Build.ArtifactStagingDirectory)"
+- task: PublishBuildArtifacts@1
+  inputs:
+    pathtoPublish: '$(Build.ArtifactStagingDirectory)' 
+    artifactName: 'drop'
